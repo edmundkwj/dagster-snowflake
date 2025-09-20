@@ -18,15 +18,17 @@ def user_engagement(snowflake: SnowflakeResource) -> None:
             movies.title,
             movies.year AS year_released,
             count(*) as number_of_comments
-        from comments comments
-        join embedded_movies movies on comments.movie_id = movies._id
+        from mflix.comments comments
+        join mflix.embedded_movies movies on comments.movie_id = movies._id
         group by movies.title, movies.year
         order by number_of_comments desc
     """
     with snowflake.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
-        engagement_df = cursor.fetch_pandas_all()
+        results = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        engagement_df = pd.DataFrame(results, columns=columns)
 
     # Create data directory if it doesn't exist
     os.makedirs('data', exist_ok=True)
@@ -47,8 +49,8 @@ def top_movies_by_month(snowflake: SnowflakeResource) -> None:
             movies.imdb__rating,
             movies.imdb__votes,
             genres.value as genres
-        from embedded_movies movies
-        join embedded_movies__genres genres
+        from mflix.embedded_movies movies
+        join mflix.embedded_movies__genres genres
             on movies._dlt_id = genres._dlt_parent_id
         where released >= '2015-01-01'::date
         and released < '2015-01-01'::date + interval '1 month'
@@ -56,15 +58,16 @@ def top_movies_by_month(snowflake: SnowflakeResource) -> None:
     with snowflake.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
-        movies_df = cursor.fetch_pandas_all()
+        results = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        movies_df = pd.DataFrame(results, columns=columns)
 
     # Find top films per genre
     movies_df['window'] = '2015-01-01'
     movies_df = movies_df.loc[movies_df.groupby('GENRES')['IMDB__RATING'].idxmax()]
 
-    # Create data directory if it doesn't exist
-    os.makedirs('data', exist_ok=True)
-    movies_df.to_csv('data/top_movies_by_month.csv', index=False)
+    with open('data/top_movies_by_month.csv', 'w') as output_file:
+        movies_df.to_csv(output_file, index=False)
 
 
 @asset(
@@ -89,7 +92,35 @@ def top_movies_by_engagement():
     plt.ylabel('Movie Title')
     plt.title('Top Movie Engagement with Year Released')
     plt.gca().invert_yaxis()
-    # Create data directory if it doesn't exist
-    os.makedirs('data', exist_ok=True)
     plt.savefig('data/top_movie_engagement.png')
-    plt.close()  # Close the figure to free memory
+
+
+@asset(
+    deps=["dlt_mongodb_comments", "dlt_mongodb_embedded_movies"]
+)
+def debug_tables(snowflake: SnowflakeResource) -> None:
+    """Check what tables exist in Snowflake after DLT run"""
+    with snowflake.get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Check schemas
+        cursor.execute("SHOW SCHEMAS IN DATABASE dagster_db")
+        schemas = cursor.fetchall()
+        print("=== SCHEMAS ===")
+        for schema in schemas:
+            print(f"Schema: {schema[1]}")
+
+        # Check tables in mflix schema
+        cursor.execute("SHOW TABLES IN SCHEMA mflix")
+        tables = cursor.fetchall()
+        print("=== TABLES IN MFLIX ===")
+        for table in tables:
+            print(f"Table: {table[1]}")
+
+        # Also check in main schema
+        cursor.execute("USE SCHEMA public")
+        cursor.execute("SHOW TABLES")
+        public_tables = cursor.fetchall()
+        print("=== TABLES IN PUBLIC ===")
+        for table in public_tables:
+            print(f"Table: {table[1]}")
