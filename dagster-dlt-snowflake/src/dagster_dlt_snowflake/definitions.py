@@ -11,6 +11,8 @@ except ImportError:
     pass
 
 from .defs.assets import mongodb, movies
+from .defs.jobs import movies_job
+from .defs.schedules import movies_schedule
 
 from dagster import Definitions, load_assets_from_modules, EnvVar
 from dagster_embedded_elt.dlt import DagsterDltResource
@@ -33,5 +35,7 @@ defs = Definitions(
     resources={
         "dlt": DagsterDltResource(),
         "snowflake": snowflake
-    }
+    },
+    jobs=[movies_job],
+    schedules=[movies_schedule]
 )
