@@ -1,5 +1,6 @@
 from dagster_snowflake import SnowflakeResource
 from dagster import asset
+from ..partitions import monthly_partition
 
 import os
 import pandas as pd
@@ -36,12 +37,15 @@ def user_engagement(snowflake: SnowflakeResource) -> None:
 
 
 @asset(
-    deps=["dlt_mongodb_embedded_movies"]
+    deps=["dlt_mongodb_embedded_movies"],
+    partitions_def=monthly_partition
 )
-def top_movies_by_month(snowflake: SnowflakeResource) -> None:
+def top_movies_by_month(context, snowflake: SnowflakeResource) -> None:
     """
     Top movie genres based on IMBD ratings, partitioned by month
     """
+    partition_date = context.partition_key
+
     query = """
         select
             movies.title,
@@ -52,23 +56,34 @@ def top_movies_by_month(snowflake: SnowflakeResource) -> None:
         from mflix.embedded_movies movies
         join mflix.embedded_movies__genres genres
             on movies._dlt_id = genres._dlt_parent_id
-        where released >= '2015-01-01'::date
-        and released < '2015-01-01'::date + interval '1 month'
+        where released >= %s::date
+        and released < %s::date + interval '1 month'
     """
     with snowflake.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(query)
+        cursor.execute(query, (partition_date, partition_date))
         results = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
         movies_df = pd.DataFrame(results, columns=columns)
 
     # Find top films per genre
-    movies_df['window'] = '2015-01-01'
-    movies_df = movies_df.loc[movies_df.groupby('GENRES')['IMDB__RATING'].idxmax()]
+    movies_df['partition_date'] = partition_date
+    # Get the index/rows of top ratings per genre
+    _selected = movies_df.groupby('GENRES')['IMDB__RATING'].idxmax()
+    # Drop the NA values
+    _selected = _selected.dropna()
+    movies_df = movies_df.loc[_selected]
 
-    with open('data/top_movies_by_month.csv', 'w') as output_file:
-        movies_df.to_csv(output_file, index=False)
+    # Create data directory if it doesn't exist
+    os.makedirs('data', exist_ok=True)
 
+    try:
+        existing = pd.read_csv('data/top_movies_by_month.csv')
+        existing = existing[existing['partition_date'] != partition_date]
+        existing = pd.concat([existing, movies_df]).sort_values(by="partition_date")
+        existing.to_csv('data/top_movies_by_month.csv', index=False)
+    except FileNotFoundError:
+        movies_df.to_csv('data/top_movies_by_month.csv', index=False)
 
 @asset(
     deps=["user_engagement"]
@@ -92,8 +107,9 @@ def top_movies_by_engagement():
     plt.ylabel('Movie Title')
     plt.title('Top Movie Engagement with Year Released')
     plt.gca().invert_yaxis()
+    # Create data directory if it doesn't exist
+    os.makedirs('data', exist_ok=True)
     plt.savefig('data/top_movie_engagement.png')
-
 
 @asset(
     deps=["dlt_mongodb_comments", "dlt_mongodb_embedded_movies"]
